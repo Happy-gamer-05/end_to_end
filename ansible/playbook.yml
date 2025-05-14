@@ -1,0 +1,90 @@
+- name: Setup Jenkins and prepare job to run app.py from GitHub via Docker
+  hosts: web
+  become: yes
+  tasks:
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install required packages
+      apt:
+        name:
+          - docker.io
+          - openjdk-11-jdk
+          - git
+        state: present
+
+    - name: Enable and start Docker
+      service:
+        name: docker
+        enabled: yes
+        state: started
+
+    - name: Run Jenkins in Docker container
+      docker_container:
+        name: jenkins
+        image: jenkins/jenkins:lts
+        ports:
+          - "8080:8080"
+          - "50000:50000"
+        volumes:
+          - /var/jenkins_home:/var/jenkins_home
+          - /var/run/docker.sock:/var/run/docker.sock  # Let Jenkins control Docker
+        state: started
+        restart_policy: always
+
+    - name: Wait for Jenkins to be up (initial setup takes time)
+      uri:
+        url: http://localhost:8080/login
+        status_code: 200
+      register: result
+      until: result.status == 200
+      retries: 20
+      delay: 15
+
+    - name: Install Docker Pipeline Plugin in Jenkins
+      uri:
+        url: http://localhost:8080/pluginManager/available/advanced
+        method: POST
+        user: admin
+        password: "{{ jenkins_admin_password }}"
+        body: "plugin=workflow-aggregator"
+        body_format: form
+        status_code: 200
+
+    - name: Create Jenkins job for app.py from GitHub repo
+      uri:
+        url: "http://localhost:8080/createItem?name=run_app_py"
+        method: POST
+        user: admin
+        password: "{{ jenkins_admin_password }}"
+        body: |
+          <?xml version='1.0' encoding='UTF-8'?>
+          <flow-definition plugin="workflow-job@2.40">
+            <description>Job to run app.py from GitHub via Docker</description>
+            <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps@2.91">
+              <script>
+                pipeline {
+                  agent any
+                  stages {
+                    stage('Checkout') {
+                      steps {
+                        git 'https://github.com/newdelthis/end_to_end.git'
+                      }
+                    }
+                    stage('Build and Run') {
+                      steps {
+                        script {
+                          docker.build('end_to_end_app')
+                          docker.image('end_to_end_app').run('-d -p 5000:5000')
+                        }
+                      }
+                    }
+                  }
+                }
+              </script>
+            </definition>
+          </flow-definition>
+        content_type: "application/xml"
+        status_code: 200
