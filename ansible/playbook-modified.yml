@@ -1,0 +1,72 @@
+---
+- name: Build and run web app from GitHub via Docker (Clean - Simpler)
+  hosts: web
+  become: yes
+  vars:
+    repo_url: "{{ web_app_repo_url | default('https://github.com/newdelthis/end_to_end.git') }}"
+    app_path: "{{ web_app_path | default('/app') }}"
+    container_name: "{{ web_app_container_name | default('web_app') }}"
+    host_port: "{{ web_app_host_port | default(5000) }}"
+    container_port: "{{ web_app_container_port | default(5000) }}"
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install required packages
+      apt:
+        name:
+          - docker.io
+          - git
+        state: present
+
+    - name: Enable and start Docker
+      service:
+        name: docker
+        enabled: yes
+        state: started
+
+    - name: Ensure application directory is removed
+      command: "rm -rf {{ app_path }}"
+      ignore_errors: yes
+
+    - name: Create application directory
+      file:
+        path: "{{ app_path }}"
+        state: directory
+
+    - name: Clone the GitHub repository
+      git:
+        repo: "{{ repo_url }}"
+        dest: "{{ app_path }}"
+
+    - name: Build Docker image
+      docker_image:
+        name: "{{ container_name }}"
+        source: build
+        build:
+          path: "{{ app_path }}/"
+        state: present
+
+    - name: Run Docker container
+      docker_container:
+        name: "{{ container_name }}"
+        image: "{{ container_name }}"
+        ports:
+          - "{{ host_port }}:{{ container_port }}"
+        restart_policy: always
+        detach: yes
+
+    - name: Wait for the application to be accessible
+      uri:
+        url: "http://localhost:{{ host_port }}"
+        status_code: 200
+      register: result
+      until: result.status == 200
+      retries: 10
+      delay: 5
+
+    - name: Display application URL
+      debug:
+        msg: "Web application is running at http://localhost:{{ host_port }}"
